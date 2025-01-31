@@ -16,21 +16,21 @@ require "./photo-library-organizer-gui.pl";
 # Global variables
 my $import_counter = 0;
 my $process_running = 0;
-my $import_date;
 our $warning_counter = 0;
 our $error_counter = 0;
 
 my @months_name = ('January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December');
-my @inventory_entries = ('Imported Date', 'File Path', 'File CRC32', 'File Type', 'DateTimeOriginal', 'Make', 'Model', 'Focal Length', 
-                        'Exposure Time', 'Aperture (f)', 'ISO', 'LensInfo', 'Flash', 'GPS Latitude', 'GPS Longitude');
+my @inventory_entries = ('Imported Date', 'File Path', 'File CRC32', 'File Size', 'File Type', 'DateTimeOriginal', 'Make', 'Model', 'Image Size', 'Megapixels', 
+                         'Focal Length', 'Exposure Time', 'Aperture (f)', 'ISO', 'LensInfo', 'Flash', 'GPS Latitude', 'GPS Longitude');
 our @verbose_options = ("All Events", "Warnings & Errors");
 our @import_action_options = ("Copy files", "Move files"); 
-our $auto_export_log = 1;
-our $inventory_enabled = 1;
+our $auto_export_log;
+our $inventory_enabled;
 our $gui_mode = 0;
 our $file_keyword = 'IMG';
-our $verbose = $verbose_options[0];
+our $verbose = $verbose_options[1];
 our $import_action = $import_action_options[0];
+our $log_file_path;
 
 # -------------------------------------------------------------------------------
 # Program entry
@@ -42,6 +42,7 @@ GetOptions( 'k=s' => \$file_keyword,
             'mv' => sub { $import_action = $import_action_options[1]}, 
             'i' => sub { $inventory_enabled = 1;}, 
             'v' => sub { $verbose = 1;}, 
+            'l' => sub { $auto_export_log = 1;}, 
             'h' => \&show_help
 ) or show_help();
 
@@ -75,6 +76,7 @@ sub show_help {
     print "  -mv                   : Move files to library. If not selected files are copied. \n";
     print "  -i                    : Update Photo Inventory; Generates a CSV file with an inventory of all imported assests. \n";
     print "  -v                    : Verbose mode. \n";
+    print "  -l                    : Store log file. Details of log file are impacted by verbose mode selected. \n";
     print "  -h                    : Show this help message\n";
     print "\n";
     exit;
@@ -102,10 +104,7 @@ sub add_inventory_entry {
     # Initialize CSV file if not exists
     if (!-e $_[0]) {
         open my $fh, '>', File::Spec->catfile($photo_library_path, 'inventory.csv') or print_to_console('ERROR', "Could not open '$_[0]' $!");
-        print $fh  "$inventory_entries[0], $inventory_entries[1], $inventory_entries[2], $inventory_entries[3], " .
-                   "$inventory_entries[4], $inventory_entries[5], $inventory_entries[6], $inventory_entries[7], " .
-                   "$inventory_entries[8], $inventory_entries[9], $inventory_entries[10], $inventory_entries[11], " .
-                   "$inventory_entries[12], $inventory_entries[13], $inventory_entries[14]\n";
+        print $fh join(", ", @inventory_entries) . "\n";
         close $fh;
     }
 
@@ -155,7 +154,7 @@ sub process_file {
     make_path($new_file_dir) unless -d $new_file_dir;
 
     # Import file
-    print_to_console('WARNING', "'$file_path' already in library. CRC32 ('${file_crc}') matched with file '$new_file_path'. File skipped.") && return if -e $new_file_path;
+    print_to_console('WARNING', "'$file_path' already in library. CRC32 ('${file_crc}') matched with file '$new_file_path'. File not imported.") && return if -e $new_file_path;
     if ($import_action eq $import_action_options[1]) {
         move($file_path, $new_file_path)? $import_counter++ : print_to_console('ERROR', "'$file_path' move failed: $!" && return);
     } else {
@@ -168,15 +167,19 @@ sub process_file {
 
         (my $flash_info = $exifTool->GetValue('Flash', 'PrintConv') || ' ')=~ s/[,]/;/g; # Replace ',' with ';' in flash value
         (my $extension = $file_ext) =~ s/[^.]*\.//g; # Remove '.' from file extension
+        my $import_date = DateTime->now->strftime('%Y:%m:%d %H:%M:%S ') . DateTime->now->time_zone->name;
         # Write entry to inventory
         add_inventory_entry("$photo_library_path/inventory.csv", 
                            "$import_date, " .
                            "$new_file_path, " .
                            "$file_crc, " .
+                           ($exifTool->GetValue('FileSize', 'PrintConv') || ' ') . ', ' .
                            ($exifTool->GetValue('FileTypeExtension', 'PrintConv') || ' ') . ', ' .
                            "$date, " .
                            ($exifTool->GetValue('Make', 'PrintConv') || ' ') . ', ' .
                            ($exifTool->GetValue('Model', 'PrintConv') || ' ') . ', ' .
+                           ($exifTool->GetValue('ImageSize', 'PrintConv') || ' ') . ', ' .
+                           ($exifTool->GetValue('Megapixels', 'PrintConv') || ' ') . ', ' .
                            ($exifTool->GetValue('FocalLength', 'PrintConv') || ' ') . ', ' .
                            ($exifTool->GetValue('ExposureTime', 'PrintConv') || ' ') . ', ' .
                            ($exifTool->GetValue('FNumber', 'PrintConv') || ' ') . ', ' .
@@ -193,13 +196,7 @@ sub process_file {
 # Parameters:  None
 # Return:      None
 $SIG{__DIE__} = sub { 
-    print_to_console('ERROR',"An error occurred: @_");   
-
-    # Make sure that log get stored before exiting     
-    my $current_date =  DateTime->now->strftime('%Y-%m-%d_%H-%M-%S') . '_' . DateTime->now->time_zone->name;
-    make_path("$photo_library_path/log") unless -d "$photo_library_path/log";
-    export_log("$photo_library_path/log/import-log-$current_date.log"); 
-
+    print_to_console('ERROR',"An error occurred: @_");
     exit(1); 
 };
 
@@ -222,8 +219,16 @@ sub run_photo_library_organizer {
     $warning_counter = 0;
     $error_counter = 0;
 
-    # Save import date
-    $import_date =  DateTime->now->strftime('%Y:%m:%d %H:%M:%S') . ' ' . DateTime->now->time_zone->name;
+    # Validate Paths
+    print_to_console('ERROR', "Invalid import path: $import_dir ") && show_help() unless defined $import_dir;
+    print_to_console('ERROR', "Invalid Photo Library path: $photo_library_path") && show_help() unless defined $photo_library_path;
+    
+    # Set log file name
+    if ($auto_export_log) {
+        my $import_date_subfix = DateTime->now->strftime('%Y-%m-%d_%H-%M-%S_') . DateTime->now->time_zone->name; 
+        $log_file_path = "$photo_library_path/log/import-$import_date_subfix.log";
+        make_path("$photo_library_path/log") unless -d "$photo_library_path/log";
+    }
 
     print_to_console('INFO', "------------------------------------------------------");
     print_to_console('INFO', "   Running Photo Library Organizer"                    );
@@ -234,22 +239,15 @@ sub run_photo_library_organizer {
     print_to_console('INFO', "      - File Keyword: $file_keyword");
     print_to_console('INFO', "      - Import action: $import_action");
     print_to_console('INFO', "      - Verbose: $verbose");
+    print_to_console('INFO', "      - Update inventory: " . ($inventory_enabled? "Yes" : "No"));
+    print_to_console('INFO', "      - Import Log: " . ($auto_export_log? "$log_file_path" : "Not generated"));
     print_to_console('INFO', "------------------------------------------------------\n");
-    print_to_console('ERROR', "Invalid arguments") && show_help() unless defined $import_dir && defined $photo_library_path;
 
     # Find all files in the directory and its subdirectories
     find(\&process_file, $import_dir);  
 
     # Print import summary
     import_summary($import_counter, $warning_counter, $error_counter);
-
-    # Store log file
-    if ($auto_export_log) {
-        (my $import_date_subfix = $import_date) =~ s/[:]/-/g; # Replace ':' with '-'
-        $import_date_subfix =~ s/ /_/g; # Replace ' ' with '_'
-        make_path("$photo_library_path/log") unless -d "$photo_library_path/log";
-        export_log("$photo_library_path/log/import-log-$import_date_subfix.log"); 
-    }
 
     # End process
     $process_running = 0;

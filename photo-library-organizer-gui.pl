@@ -77,6 +77,8 @@ sub print_to_console {
     $warning_counter++ if $message_level eq 'WARNING';
     $error_counter++ if $message_level eq 'ERROR';
 
+    add_log_entry($message) if ($auto_export_log);
+
     print("$message\n");
 }
 
@@ -129,6 +131,16 @@ sub  export_log {
         close $fh;
         print_to_console('INFO', "\nLog exported to $log_file");
     }
+}
+
+# Subroutine:  add_log_entry
+# Information: Subroutine to add a new event entry to the log file.
+# Parameters:  $_[0]: String with event to be added to the log file.
+# Return:      None
+sub add_log_entry {
+    open my $fh, '>>', $log_file_path or print_to_console('ERROR', "Could not open '$_[0]' $!");
+    print $fh $_[0] . "\n";
+    close $fh;
 }
 
 # Subroutine:  photo_library_organizer_gui
