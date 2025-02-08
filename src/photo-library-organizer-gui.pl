@@ -1,6 +1,7 @@
 use Tk;               # cpanm https://github.com/StrawberryPerl/Perl-Dist-Strawberry/releases/download/patched_cpan_modules/Tk-804.036_001.tar.gz
 use Tk::BrowseEntry;
 use Tk::LabFrame;
+use Tk::ProgressBar;
 use Config::Tiny;     # Install the module with the command: cpan Config::Tiny
 
 # Global file variables
@@ -80,6 +81,20 @@ sub print_to_console {
     add_log_entry($message) if ($auto_export_log);
 
     print("$message\n");
+}
+
+# Subroutine:  clean_console
+# Information: This subroutine clean the console before starting a new import process.
+# Parameters:  None
+# Return:      None
+sub clean_console {
+
+    if ( defined $console ) {
+        $console->configure(-state => 'normal');
+        $console->delete('1.0', 'end');
+        $console->update;  # Force the GUI to refresh immediately
+        $console->configure(-state => 'disabled');
+    }
 }
 
 # Subroutine:  warning_alert
@@ -285,11 +300,19 @@ sub photo_library_organizer_gui {
                                         -state => 'disabled')->pack(-side => 'top', 
                                                                     -fill => 'both', 
                                                                     -expand => 1);
+    my $progrss_bar = $console_frame->ProgressBar(-width => 5, 
+                                                  -length => 515, 
+                                                  -from => 0, 
+                                                  -to => 100, 
+                                                  -blocks => 1,
+                                                  -variable  => \$progress_value,
+                                                  -colors => [0, 'green'])->pack(-side => 'top');
     ###################### Console Color code ###################               
     $console->tagConfigure('ERROR', -foreground => 'red');
     $console->tagConfigure('WARNING', -foreground => 'orange');
     $console->tagConfigure('INFO', -foreground => 'black');  
     $console->tagConfigure('VERBOSE', -foreground => 'black');  
+
 
     MainLoop;
 }

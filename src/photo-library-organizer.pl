@@ -18,6 +18,7 @@ my $import_counter = 0;
 my $process_running = 0;
 our $warning_counter = 0;
 our $error_counter = 0;
+our $progress_value = 0;
 
 my @months_name = ('January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December');
 my @inventory_entries = ('Imported Date', 'File Path', 'File CRC32', 'File Size', 'File Type', 'DateTimeOriginal', 'Make', 'Model', 'Image Size', 'Megapixels', 
@@ -31,6 +32,7 @@ our $file_keyword = 'IMG';
 our $verbose = $verbose_options[1];
 our $import_action = $import_action_options[0];
 our $log_file_path;
+my @files_to_import;
 
 # -------------------------------------------------------------------------------
 # Program entry
@@ -113,6 +115,25 @@ sub add_inventory_entry {
     print $fh $_[1];
     close $fh;
 }
+# Subroutine:  index_files_to_import
+# Information: Subroutine to find and index all files to import. 
+#              This subroutine is called by the find function. It validates the file before doing the import process.
+# Parameters:  None
+# Return:      None
+sub index_files_to_import {
+    
+    return if -d;
+    my $file_path = "$File::Find::name";
+    my ($file_name, $file_dir, $file_ext) = fileparse($file_path, qr/\.[^.]*/);
+    
+    # Process only files with supported extensions.
+    if ((!defined Image::ExifTool::GetFileType($file_path)) or (!-e $file_path)) {
+        print_to_console('WARNING', "Unsupported file: '$file_path'");
+        return;
+    }
+
+    push @files_to_import, $file_path;
+}
 
 # Subroutine:  process_file
 # Information: Subroutine to process each of the files that are found in the import directory.
@@ -122,16 +143,9 @@ sub add_inventory_entry {
 # Return:      None
 sub process_file {
 
-
-    return if -d;
-    my $file_path = "$File::Find::name";
+    my $file_path = $_[0];
     my ($file_name, $file_dir, $file_ext) = fileparse($file_path, qr/\.[^.]*/);
       
-    # Process only files with supported extensions.
-    if ((!defined Image::ExifTool::GetFileType($file_path)) or (!-e $file_path)) {
-        print_to_console('WARNING', "Unsupported file: '$file_path'");
-        return;
-    }
 
     # Calculate CRC of the file    
     my $file_crc = calculate_file_crc32($file_path);
@@ -160,7 +174,7 @@ sub process_file {
     } else {
         copy($file_path, $new_file_path)? $import_counter++ : print_to_console('ERROR', "'$file_path' copy failed: $!" && return);
     }
-    print_to_console('VERBOSE', "Import File:'$file_path' to '$new_file_path'");
+    print_to_console('VERBOSE', "[$progress_value%] Import File:'$file_path' to '$new_file_path'");
     
     # add to file inventory
      if ($inventory_enabled) {
@@ -213,6 +227,7 @@ sub run_photo_library_organizer {
 
     # start process
     $process_running = 1;
+    clean_console();
 
     # Reset counters
     $import_counter = 0;
@@ -243,14 +258,25 @@ sub run_photo_library_organizer {
     print_to_console('INFO', "      - Import Log: " . ($auto_export_log? "$log_file_path" : "Not generated"));
     print_to_console('INFO', "------------------------------------------------------\n");
 
-    # Find all files in the directory and its subdirectories
-    find(\&process_file, $import_dir);  
+    # Index files to import
+    find(\&index_files_to_import, $import_dir); 
+
+    my $total_files = scalar @files_to_import;
+    my $processed_files = 0;
+
+    # Import files 
+    foreach my $file (@files_to_import) {
+        $processed_files++;
+        $progress_value = sprintf("%.0f", ($processed_files / scalar @files_to_import) * 100);
+        process_file($file);
+    }
 
     # Print import summary
     import_summary($import_counter, $warning_counter, $error_counter);
 
     # End process
     $process_running = 0;
+    $progress_value = 0;
 }
 
 
