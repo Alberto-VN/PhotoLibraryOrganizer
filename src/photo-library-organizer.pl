@@ -11,7 +11,7 @@ use Digest::CRC qw(crc32);       # Install the module with the command: cpan Dig
 use File::Slurp qw(read_file);
 use Getopt::Long;
 use DateTime;
-require "./photo-library-organizer-gui.pl";
+require "./src/photo-library-organizer-gui.pl";
 
 # Global variables
 my $import_counter = 0;
