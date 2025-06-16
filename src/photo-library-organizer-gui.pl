@@ -28,6 +28,7 @@ sub load_config {
         $auto_export_log = $config->{_}->{auto_export_log} // 1;
         $import_action = $config->{_}->{import_action} // @import_action_options[0];
         $inventory_enabled = $config->{_}->{inventory_enabled} // 1;
+        $excluded_extensions = $config->{_}->{excluded_extensions} // $excluded_extensions;
     }
 }
 
@@ -46,6 +47,7 @@ sub save_config {
     $config->{_}->{auto_export_log} = $auto_export_log;
     $config->{_}->{import_action} = $import_action;
     $config->{_}->{inventory_enabled} = $inventory_enabled;
+    $config->{_}->{excluded_extensions} = $excluded_extensions;
     $config->write($config_file);
 }
 
@@ -169,6 +171,10 @@ sub photo_library_organizer_gui {
     
     # Load previously stored configuration
     load_config();
+
+    # Routine to close the GUI
+    $mw->protocol('WM_DELETE_WINDOW' => sub {$mw->destroy;
+                                             exit; });
 
     #########################  Main Windows ###########################
     $mw->title("Photo Library Organizer");

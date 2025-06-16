@@ -21,8 +21,6 @@ our $error_counter = 0;
 our $progress_value = 0;
 
 my @months_name = ('January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December');
-my @inventory_entries = ('Imported Date', 'File Path', 'File CRC32', 'File Size', 'File Type', 'DateTimeOriginal', 'Make', 'Model', 'Image Size', 'Megapixels', 
-                         'Focal Length', 'Exposure Time', 'Aperture (f)', 'ISO', 'LensInfo', 'Flash', 'GPS Latitude', 'GPS Longitude');
 our @verbose_options = ("All Events", "Warnings & Errors");
 our @import_action_options = ("Copy files", "Move files"); 
 our $auto_export_log;
@@ -32,6 +30,7 @@ our $file_keyword = 'IMG';
 our $verbose = $verbose_options[1];
 our $import_action = $import_action_options[0];
 our $log_file_path;
+our $excluded_extensions = qr/\.(csv|xlsx|zip|7z)$/i; # Files extensions excluded from import.
 my @files_to_import;
 
 # -------------------------------------------------------------------------------
@@ -95,6 +94,94 @@ sub calculate_file_crc32 {
     return $crcDigest->hexdigest;
 }
 
+sub generate_google_maps_link {
+    my ($coordinate_string) = @_;
+
+    # Extract latitude and longitude components using regex
+    if ($coordinate_string =~ /(\d+)\s*deg\s*(\d+)'?\s*(\d+(?:\.\d+)?)"?\s*([NS])\s*,\s*(\d+)\s*deg\s*(\d+)'?\s*(\d+(?:\.\d+)?)"?\s*([EW])/) {
+        my ($lat_d, $lat_m, $lat_s, $lat_dir, $lon_d, $lon_m, $lon_s, $lon_dir) = ($1, $2, $3, $4, $5, $6, $7, $8);
+
+        # Convert DMS to decimal degrees
+        my $latitude  = $lat_d + ($lat_m / 60) + ($lat_s / 3600);
+        my $longitude = $lon_d + ($lon_m / 60) + ($lon_s / 3600);
+
+        # Adjust for direction (N/S and E/W)
+        $latitude  *= -1 if $lat_dir eq 'S';
+        $longitude *= -1 if $lon_dir eq 'W';
+
+        # Generate Google Maps link
+        return "https://www.google.com/maps/place/$latitude,$longitude";
+    } else {
+        return "Invalid coordinate format!";
+    }
+}
+
+# Subroutine:  read_file_metadata
+# Information: Subroutine to find and index all files to import. 
+#              This subroutine is called by the find function. It validates the file before doing the import process.
+# Parameters:  %_ : Hash reference containing Key: 'ImportPath' with path of file to import. 
+# Return:      None
+sub read_file_metadata 
+{
+    my $file_path = $_[0];
+    my %file_metadata;
+
+    my $exifTool = new Image::ExifTool;
+    $exifTool->ExtractInfo($file_path);
+
+    ## DEBUG DATA
+    $file_metadata{'CreateDate'} = $exifTool->GetValue('CreateDate', 'PrintConv') || ' ';
+    $file_metadata{'DateTimeOriginal'} = $exifTool->GetValue('DateTimeOriginal', 'PrintConv') || ' ';
+    $file_metadata{'FileModifyDate'} = $exifTool->GetValue('FileModifyDate', 'PrintConv') || ' ';
+    $file_metadata{'FileCreateDate'} = $exifTool->GetValue('FileCreateDate', 'PrintConv') || ' ';
+    ##
+
+    $file_metadata{'ImportPath'}        = $file_path;
+    $file_metadata{'FileCRC'}           = calculate_file_crc32($file_path);
+    $file_metadata{'FileSize'}          = $exifTool->GetValue('FileSize', 'PrintConv') || ' ';
+    $file_metadata{'FileTypeExtension'} = $exifTool->GetValue('FileTypeExtension', 'PrintConv') || ' ';
+    $file_metadata{'Make'}              = $exifTool->GetValue('Make', 'PrintConv') || ' ';
+    $file_metadata{'Model'}             = $exifTool->GetValue('Model', 'PrintConv') || ' ';
+    $file_metadata{'ImageSize'}         = $exifTool->GetValue('ImageSize', 'PrintConv') || ' ';
+    $file_metadata{'Megapixels'}        = $exifTool->GetValue('Megapixels', 'PrintConv') || ' ';
+    $file_metadata{'FocalLength'}       = $exifTool->GetValue('FocalLength', 'PrintConv') || ' ';
+    $file_metadata{'ExposureTime'}      = $exifTool->GetValue('ExposureTime', 'PrintConv') || ' ';
+    $file_metadata{'FNumber'}           = $exifTool->GetValue('FNumber', 'PrintConv') || ' ';
+    $file_metadata{'ISO'}               = $exifTool->GetValue('ISO', 'PrintConv') || ' ';
+    $file_metadata{'LensInfo'}          = $exifTool->GetValue('LensInfo', 'PrintConv') || ' ';
+    $file_metadata{'ContentIdentifier'} = $exifTool->GetValue('ContentIdentifier', 'PrintConv') || ' ';
+    $file_metadata{'Flash'}             = $exifTool->GetValue('Flash', 'PrintConv') || ' ';
+    $file_metadata{'GPSInfo'}           = $exifTool->GetValue('GPSCordinates', 'PrintConv');
+     # Build GPSInfo if not directly available
+     $file_metadata{'GPSInfo'}          = (($exifTool->GetValue('GPSLatitude', 'PrintConv')   || ' ') . ', ' .
+                                           ($exifTool->GetValue('GPSLongitude', 'PrintConv')  || ' ') . ', ' .
+                                           ($exifTool->GetValue('GPSAltitude', 'PrintConv')   || ' ') . ', ' .
+                                           ($exifTool->GetValue('GPSAltitudeRef', 'PrintConv')|| ' ')) unless defined $file_metadata{'GPSInfo'};
+    $file_metadata{'GPSInfo'} = ' ' if($file_metadata{'GPSInfo'} eq ' ,  ,  ,  ');
+    $file_metadata{'MapLink'} = generate_google_maps_link($file_metadata{'GPSInfo'}) if ($file_metadata{'GPSInfo'} ne ' ');
+        
+    # Prefered parameter to extract date depending on file type
+    if('mov' eq $file_metadata{'FileTypeExtension'})
+    {
+        $file_metadata{'Date'} = ($exifTool->GetValue('CreationDate', 'PrintConv'));
+    }
+    else
+    {
+       # Default for all other formats
+       $file_metadata{'Date'} = ($exifTool->GetValue('CreateDate', 'PrintConv')        || 
+                                 $exifTool->GetValue('DateTimeOriginal', 'PrintConv')  ||
+                                 # Use system file modification or creation date as last resource
+                                 $exifTool->GetValue('FileModifyDate', 'PrintConv')    || 
+                                 $exifTool->GetValue('FileCreateDate', 'PrintConv'));
+    }
+
+    return %file_metadata;
+
+    # https://nominatim.openstreetmap.org/reverse?lat=20.15855&lon=-103.04309&zoom=8&format=jsonv2
+    # https://operations.osmfoundation.org/policies/nominatim/
+
+}
+
 # Subroutine:  add_inventory_entry
 # Information: Subroutine to add a new entry to the inventory/CSV file. Each entry corresponds to a file imported into the library.
 #              It is responsability of the caller to ensure that structure of the string matches the CSV header defined in @inventory_entries
@@ -102,19 +189,37 @@ sub calculate_file_crc32 {
 #              $_[1]: String to be added to the inventory/CSV file
 # Return:      None
 sub add_inventory_entry {
+    my %file_entry = @_; 
+    my $import_date = DateTime->now->strftime('%Y:%m:%d %H:%M:%S ') . DateTime->now->time_zone->name;
+    my @inventory_header = ('Imported Date',           'Imported from:',     'Destination',         'File CRC32', 
+                             'File Size',              'File Type',          'DateTimeOriginal', 
+                             'Make',                   'Model',              'Image Size', 
+                             'Megapixels',             'Focal Length',       'Exposure Time', 
+                             'Aperture (f)',           'ISO',                'LensInfo', 
+                             'Flash',                  'GPS Info',
+                             'Content Identifier',     'CreateDate',         'DateTimeOriginal', 'FileModifyDate', 'FileCreateDate', 'Map Link');
+    my @inventory_entries = ($import_date,                      $file_entry{'ImportPath'},        $file_entry{'Destination'}, $file_entry{'FileCRC'}, 
+                             $file_entry{'FileSize'},           $file_entry{'FileTypeExtension'}, $file_entry{'Date'}, 
+                             $file_entry{'Make'},               $file_entry{'Model'},             $file_entry{'ImageSize'}, 
+                             $file_entry{'Megapixels'},         $file_entry{'FocalLength'},       $file_entry{'ExposureTime'}, 
+                             $file_entry{'FNumber'},            $file_entry{'ISO'},               $file_entry{'LensInfo'}, 
+                             $file_entry{'Flash'},              $file_entry{'GPSInfo'},
+                             $file_entry{'ContentIdentifier'},  $file_entry{'CreateDate'}, $file_entry{'DateTimeOriginal'}, $file_entry{'FileModifyDate'}, $file_entry{'FileCreateDate'}, $file_entry{'MapLink'});
 
     # Initialize CSV file if not exists
-    if (!-e $_[0]) {
+    if (!-e "$photo_library_path/inventory.csv") {
         open my $fh, '>', File::Spec->catfile($photo_library_path, 'inventory.csv') or print_to_console('ERROR', "Could not open '$_[0]' $!");
-        print $fh join(", ", @inventory_entries) . "\n";
+        print $fh "sep=;\n";
+        print $fh join("; ", @inventory_header) . "\n";
         close $fh;
     }
 
     # Add entry to CSV file
-    open my $fh, '>>', $_[0] or print_to_console('ERROR', "Could not open '$_[0]' $!");
-    print $fh $_[1];
+    open my $fh, '>>', "$photo_library_path/inventory.csv" or print_to_console('ERROR', "Could not open '$_[0]' $!");
+    print $fh join("; ", @inventory_entries) . "\n";
     close $fh;
 }
+
 # Subroutine:  index_files_to_import
 # Information: Subroutine to find and index all files to import. 
 #              This subroutine is called by the find function. It validates the file before doing the import process.
@@ -124,15 +229,20 @@ sub index_files_to_import {
     
     return if -d;
     my $file_path = "$File::Find::name";
-    my ($file_name, $file_dir, $file_ext) = fileparse($file_path, qr/\.[^.]*/);
     
     # Process only files with supported extensions.
     if ((!defined Image::ExifTool::GetFileType($file_path)) or (!-e $file_path)) {
         print_to_console('WARNING', "Unsupported file: '$file_path'");
         return;
     }
+    # Skip files with excluded extensions
+    if ($file_path =~ $excluded_extensions) {
+        print_to_console('WARNING', "Excluded File: '$file_path' Edit exclusions list on .init file");
+        return;
+    }
 
-    push @files_to_import, $file_path;
+    push(@files_to_import, $file_path);
+    
 }
 
 # Subroutine:  process_file
@@ -145,63 +255,36 @@ sub process_file {
 
     my $file_path = $_[0];
     my ($file_name, $file_dir, $file_ext) = fileparse($file_path, qr/\.[^.]*/);
-      
 
-    # Calculate CRC of the file    
-    my $file_crc = calculate_file_crc32($file_path);
+    my %file_metadata = read_file_metadata($file_path);
 
-    # Extract metadata from the file
-    my $exifTool = new Image::ExifTool;
-    $exifTool->ExtractInfo($file_path);
-    my $date = $exifTool->GetValue('CreateDate', 'PrintConv')        || 
-                $exifTool->GetValue('DateTimeOriginal', 'PrintConv') ||
-                $exifTool->GetValue('FileModifyDate', 'PrintConv')   ||
-                $exifTool->GetValue('FileCreateDate', 'PrintConv');
+    my $date = $file_metadata{'Date'};
+    my ($file_identifier) = $file_metadata{'FileCRC'};
+    # Use ContentIdentifier as ID for Apple Live Photos, to ensure same name on Photo and Video file. 
+    ($file_identifier) = $file_metadata{'ContentIdentifier'} =~ /-([A-F0-9]+)$/ if (' ' ne $file_metadata{'ContentIdentifier'});
 
     # Parse extracted date to compose the new file name and path
     my ($year, $month, $day, $hour, $minute, $second) = $date =~ /(\d{4}):(\d{2}):(\d{2}) (\d{2}):(\d{2}):(\d{2})/;
     my $new_file_dir = "${photo_library_path}/${year}/${month}_${months_name[$month - 1]}/";
-    my $new_file_name = "${file_keyword}_${year}${month}${day}_${hour}${minute}${second}_${file_crc}${file_ext}";
+    my $new_file_name = "${file_keyword}_${year}${month}${day}_${hour}${minute}${second}_$file_identifier${file_ext}";
     my $new_file_path = $new_file_dir . $new_file_name;
+    $file_metadata{'Destination'} = $new_file_path;
 
     # Create the directory if it doesn't exist
     make_path($new_file_dir) unless -d $new_file_dir;
 
     # Import file
-    print_to_console('WARNING', "'$file_path' already in library. CRC32 ('${file_crc}') matched with file '$new_file_path'. File not imported.") && return if -e $new_file_path;
+    print_to_console('WARNING', "'$file_path' already in library. File Identifier ('$file_identifier') matched with file '$new_file_path'. File not imported.") && return if -e $new_file_path;
     if ($import_action eq $import_action_options[1]) {
-        move($file_path, $new_file_path)? $import_counter++ : print_to_console('ERROR', "'$file_path' move failed: $!" && return);
+        # move($file_path, $new_file_path)? $import_counter++ : print_to_console('ERROR', "'$file_path' move failed: $!" && return);
     } else {
-        copy($file_path, $new_file_path)? $import_counter++ : print_to_console('ERROR', "'$file_path' copy failed: $!" && return);
+        # copy($file_path, $new_file_path)? $import_counter++ : print_to_console('ERROR', "'$file_path' copy failed: $!" && return);
     }
     print_to_console('VERBOSE', "[$progress_value%] Import File:'$file_path' to '$new_file_path'");
     
     # add to file inventory
      if ($inventory_enabled) {
-
-        (my $flash_info = $exifTool->GetValue('Flash', 'PrintConv') || ' ')=~ s/[,]/;/g; # Replace ',' with ';' in flash value
-        (my $extension = $file_ext) =~ s/[^.]*\.//g; # Remove '.' from file extension
-        my $import_date = DateTime->now->strftime('%Y:%m:%d %H:%M:%S ') . DateTime->now->time_zone->name;
-        # Write entry to inventory
-        add_inventory_entry("$photo_library_path/inventory.csv", 
-                           "$import_date, " .
-                           "$new_file_path, " .
-                           "$file_crc, " .
-                           ($exifTool->GetValue('FileSize', 'PrintConv') || ' ') . ', ' .
-                           ($exifTool->GetValue('FileTypeExtension', 'PrintConv') || ' ') . ', ' .
-                           "$date, " .
-                           ($exifTool->GetValue('Make', 'PrintConv') || ' ') . ', ' .
-                           ($exifTool->GetValue('Model', 'PrintConv') || ' ') . ', ' .
-                           ($exifTool->GetValue('ImageSize', 'PrintConv') || ' ') . ', ' .
-                           ($exifTool->GetValue('Megapixels', 'PrintConv') || ' ') . ', ' .
-                           ($exifTool->GetValue('FocalLength', 'PrintConv') || ' ') . ', ' .
-                           ($exifTool->GetValue('ExposureTime', 'PrintConv') || ' ') . ', ' .
-                           ($exifTool->GetValue('FNumber', 'PrintConv') || ' ') . ', ' .
-                           ($exifTool->GetValue('ISO', 'PrintConv') || ' ') . ', ' .
-                           ($exifTool->GetValue('LensInfo', 'PrintConv') || ' ') . ', ' .
-                           "$flash_info, " .
-                           ($exifTool->GetValue('GPSLatitude', 'PrintConv') || ' ') . ', ' .
-                           ($exifTool->GetValue('GPSLongitude', 'PrintConv') || ' ') . "\n");
+        add_inventory_entry(%file_metadata);
      }
 }
 
@@ -267,7 +350,7 @@ sub run_photo_library_organizer {
     # Import files 
     foreach my $file (@files_to_import) {
         $processed_files++;
-        $progress_value = sprintf("%.0f", ($processed_files / scalar @files_to_import) * 100);
+        $progress_value = sprintf("%.0f", ($processed_files / $total_files) * 100);
         process_file($file);
     }
 
