@@ -11,6 +11,7 @@ use Digest::CRC qw(crc32);       # Install the module with the command: cpan Dig
 use File::Slurp qw(read_file);
 use Getopt::Long;
 use DateTime;
+use JSON;
 require "./src/photo-library-organizer-gui.pl";
 
 # Global variables
@@ -30,12 +31,19 @@ our $file_keyword = 'IMG';
 our $verbose = $verbose_options[1];
 our $import_action = $import_action_options[0];
 our $log_file_path;
+our $detailed_location = 1;
 our $excluded_extensions = qr/\.(csv|xlsx|zip|7z)$/i; # Files extensions excluded from import.
 my @files_to_import;
+my %location_cache;
+
+    my $location_cache_file = "./locations.json";
 
 # -------------------------------------------------------------------------------
 # Program entry
 # -------------------------------------------------------------------------------
+
+# Load location cache from file to ram if it exists
+load_location_cache();
 
 # Parse command-line arguments 
 GetOptions( 'k=s' => \$file_keyword, 
@@ -94,26 +102,43 @@ sub calculate_file_crc32 {
     return $crcDigest->hexdigest;
 }
 
-sub generate_google_maps_link {
+sub load_location_cache {
+    if (-e $location_cache_file) {
+        eval {
+            my $json_text = read_file($location_cache_file);
+            %location_cache = %{ decode_json($json_text) };
+        };
+        print_to_console('WARNING', "Failed to load location cache: $@") if $@;
+    }
+}
+
+sub store_location_cache {
+    eval {
+        my $json_text = encode_json(\%location_cache);
+        write_file($location_cache_file, $json_text);
+    };
+    print_to_console('WARNING', "Failed to store location cache: $@") if $@;
+}
+
+sub convert_cordenates_to_decimal {
     my ($coordinate_string) = @_;
+    my $latitude = undef;
+    my $longitude = undef;
 
     # Extract latitude and longitude components using regex
     if ($coordinate_string =~ /(\d+)\s*deg\s*(\d+)'?\s*(\d+(?:\.\d+)?)"?\s*([NS])\s*,\s*(\d+)\s*deg\s*(\d+)'?\s*(\d+(?:\.\d+)?)"?\s*([EW])/) {
         my ($lat_d, $lat_m, $lat_s, $lat_dir, $lon_d, $lon_m, $lon_s, $lon_dir) = ($1, $2, $3, $4, $5, $6, $7, $8);
 
         # Convert DMS to decimal degrees
-        my $latitude  = $lat_d + ($lat_m / 60) + ($lat_s / 3600);
-        my $longitude = $lon_d + ($lon_m / 60) + ($lon_s / 3600);
+        $latitude  = $lat_d + ($lat_m / 60) + ($lat_s / 3600);
+        $longitude = $lon_d + ($lon_m / 60) + ($lon_s / 3600);
 
         # Adjust for direction (N/S and E/W)
         $latitude  *= -1 if $lat_dir eq 'S';
         $longitude *= -1 if $lon_dir eq 'W';
-
-        # Generate Google Maps link
-        return "https://www.google.com/maps/place/$latitude,$longitude";
-    } else {
-        return "Invalid coordinate format!";
     }
+
+    return ($latitude, $longitude);
 }
 
 # Subroutine:  read_file_metadata
@@ -158,7 +183,43 @@ sub read_file_metadata
                                            ($exifTool->GetValue('GPSAltitude', 'PrintConv')   || ' ') . ', ' .
                                            ($exifTool->GetValue('GPSAltitudeRef', 'PrintConv')|| ' ')) unless defined $file_metadata{'GPSInfo'};
     $file_metadata{'GPSInfo'} = ' ' if($file_metadata{'GPSInfo'} eq ' ,  ,  ,  ');
-    $file_metadata{'MapLink'} = generate_google_maps_link($file_metadata{'GPSInfo'}) if ($file_metadata{'GPSInfo'} ne ' ');
+    my ($latitude, $longitude) = convert_cordenates_to_decimal($file_metadata{'GPSInfo'});
+    $file_metadata{'MapLink'} = "https://www.google.com/maps/place/$latitude,$longitude" if ((defined $latitude) && (defined $longitude));
+
+    if(($detailed_location) && (defined $latitude) && (defined $longitude)) {
+
+        # Round latitude and longitude to 3 decimal places. This provides an accuracy of about 111 meters at the equator.
+        my $latitude_rounded = sprintf("%.3f", $latitude);
+        my $longitude_rounded = sprintf("%.3f", $longitude);
+
+        # Check if location is already cached
+        if (exists $location_cache{"$latitude,$longitude"}) {
+            $file_metadata{'DetailedLocation'} = $location_cache{"$latitude,$longitude"}->{display_name} || ' ';
+        }
+        else {
+            # Fetch location data from Nominatim API
+            my $nominatim_url = "https://nominatim.openstreetmap.org/reverse?lat=$latitude_rounded&lon=$longitude_rounded&zoom=15&format=jsonv2";
+            my $location_data = eval { read_file($nominatim_url) };
+            if ($@) {
+                print_to_console('ERROR', "Failed to fetch location data: $@");
+                $file_metadata{'DetailedLocation'} = ' ';
+            } 
+            else {
+                # Decode JSON response
+                my $location_info = eval { decode_json($location_data) };
+            
+                # Store location info in cache
+                $location_cache{"$latitude,$longitude"} = $location_info if $location_info;
+
+                # Extract display name from location info
+                if ($location_info && exists $location_info->{display_name}) {
+                    $file_metadata{'DetailedLocation'} = $location_info->{display_name};
+                } else {
+                    $file_metadata{'DetailedLocation'} = ' ';
+                }
+            }
+        }
+    }
         
     # Prefered parameter to extract date depending on file type
     if('mov' eq $file_metadata{'FileTypeExtension'})
@@ -176,9 +237,6 @@ sub read_file_metadata
     }
 
     return %file_metadata;
-
-    # https://nominatim.openstreetmap.org/reverse?lat=20.15855&lon=-103.04309&zoom=8&format=jsonv2
-    # https://operations.osmfoundation.org/policies/nominatim/
 
 }
 
