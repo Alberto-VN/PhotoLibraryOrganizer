@@ -11,7 +11,13 @@ use Digest::CRC qw(crc32);       # Install the module with the command: cpan Dig
 use File::Slurp qw(read_file);
 use Getopt::Long;
 use DateTime;
-require "./src/photo-library-organizer-gui.pl";
+
+# Load GUI module conditionally
+if ($^O eq 'linux') {
+    require "./src/photo-library-organizer-gtk3-gui.pl";
+} elsif ($^O eq 'MSWin32') {
+    require "./src/photo-library-organizer-tk-gui.pl";
+}
 
 # Global variables
 my $import_counter = 0;
@@ -159,6 +165,7 @@ sub read_file_metadata
                                            ($exifTool->GetValue('GPSAltitudeRef', 'PrintConv')|| ' ')) unless defined $file_metadata{'GPSInfo'};
     $file_metadata{'GPSInfo'} = ' ' if($file_metadata{'GPSInfo'} eq ' ,  ,  ,  ');
     $file_metadata{'MapLink'} = generate_google_maps_link($file_metadata{'GPSInfo'}) if ($file_metadata{'GPSInfo'} ne ' ');
+    $file_metadata{'MapLink'} ||= ' ';
         
     # Prefered parameter to extract date depending on file type
     if('mov' eq $file_metadata{'FileTypeExtension'})
@@ -204,7 +211,7 @@ sub add_inventory_entry {
                              $file_entry{'Megapixels'},         $file_entry{'FocalLength'},       $file_entry{'ExposureTime'}, 
                              $file_entry{'FNumber'},            $file_entry{'ISO'},               $file_entry{'LensInfo'}, 
                              $file_entry{'Flash'},              $file_entry{'GPSInfo'},
-                             $file_entry{'ContentIdentifier'},  $file_entry{'CreateDate'}, $file_entry{'DateTimeOriginal'}, $file_entry{'FileModifyDate'}, $file_entry{'FileCreateDate'}, $file_entry{'MapLink'});
+                             $file_entry{'ContentIdentifier'},  $file_entry{'CreateDate'},       $file_entry{'DateTimeOriginal'}, $file_entry{'FileModifyDate'}, $file_entry{'FileCreateDate'}, $file_entry{'MapLink'});
 
     # Initialize CSV file if not exists
     if (!-e "$photo_library_path/inventory.csv") {
@@ -276,9 +283,9 @@ sub process_file {
     # Import file
     print_to_console('WARNING', "'$file_path' already in library. File Identifier ('$file_identifier') matched with file '$new_file_path'. File not imported.") && return if -e $new_file_path;
     if ($import_action eq $import_action_options[1]) {
-        # move($file_path, $new_file_path)? $import_counter++ : print_to_console('ERROR', "'$file_path' move failed: $!" && return);
+        move($file_path, $new_file_path)? $import_counter++ : print_to_console('ERROR', "'$file_path' move failed: $!" && return);
     } else {
-        # copy($file_path, $new_file_path)? $import_counter++ : print_to_console('ERROR', "'$file_path' copy failed: $!" && return);
+        copy($file_path, $new_file_path)? $import_counter++ : print_to_console('ERROR', "'$file_path' copy failed: $!" && return);
     }
     print_to_console('VERBOSE', "[$progress_value%] Import File:'$file_path' to '$new_file_path'");
     
@@ -306,7 +313,10 @@ $SIG{__DIE__} = sub {
 sub run_photo_library_organizer {
 
     # Check if process is already running
-    warning_alert("Process is already running. Wait until it finishes.") && return if $process_running;
+    if ($process_running) {
+        warning_alert("Process is already running. Wait until it finishes.");
+        return;
+    }
 
     # start process
     $process_running = 1;
@@ -351,6 +361,7 @@ sub run_photo_library_organizer {
     foreach my $file (@files_to_import) {
         $processed_files++;
         $progress_value = sprintf("%.0f", ($processed_files / $total_files) * 100);
+        update_progress_bar($progress_value/100, "$progress_value% completed");
         process_file($file);
     }
 

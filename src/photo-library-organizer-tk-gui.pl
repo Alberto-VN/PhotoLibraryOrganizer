@@ -160,6 +160,17 @@ sub add_log_entry {
     close $fh;
 }
 
+
+# Subroutine:  update_progress_bar
+# Information: Updates the progress bar with the given fraction and optional text
+# Parameters:  $_[0]: Fraction value (0.0 to 1.0)
+#              $_[1]: Optional text label
+# Return:      None
+sub update_progress_bar {
+  # Routine body is empty, as progress bar is updated directly with progress_value variable
+}
+
+
 # Subroutine:  photo_library_organizer_gui
 # Information: This is the main subroutine for the GUI. It configures every element and its properties on the main window.
 #              It gets called when parameter [-gui] gets passed or if no mandatory parameters where passed to the binary. 
