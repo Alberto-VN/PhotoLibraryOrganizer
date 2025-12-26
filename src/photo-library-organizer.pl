@@ -6,11 +6,13 @@ use File::Copy;
 use File::Find;
 use File::Path qw(make_path);
 use File::stat;
-use Image::ExifTool qw(:Public); # Install the module with the command: cpan Image::ExifTool
-use Digest::CRC qw(crc32);       # Install the module with the command: cpan Digest::CRC
+use Image::ExifTool qw(:Public);
+use Digest::CRC qw(crc32);
 use File::Slurp qw(read_file);
 use Getopt::Long;
 use DateTime;
+use JSON;
+use LWP::UserAgent;
 
 # Load GUI module conditionally
 if ($^O eq 'linux') {
@@ -36,12 +38,20 @@ our $file_keyword = 'IMG';
 our $verbose = $verbose_options[1];
 our $import_action = $import_action_options[0];
 our $log_file_path;
+our $detailed_location = 1;
 our $excluded_extensions = qr/\.(csv|xlsx|zip|7z)$/i; # Files extensions excluded from import.
 my @files_to_import;
+
+my $location_cache_file = "./data/locations-cache.json";
+my %location_cache;
+
 
 # -------------------------------------------------------------------------------
 # Program entry
 # -------------------------------------------------------------------------------
+
+# Load location cache from file to ram if it exists
+load_location_cache();
 
 # Parse command-line arguments 
 GetOptions( 'k=s' => \$file_keyword, 
@@ -100,27 +110,117 @@ sub calculate_file_crc32 {
     return $crcDigest->hexdigest;
 }
 
-sub generate_google_maps_link {
+# Subroutine:  load_location_cache
+# Information: Subroutine to load locations cache data from JSON file into %location_cache hash.
+# Parameters:  None
+# Return:      None
+sub load_location_cache {
+
+  if (-e $location_cache_file) {
+      eval {
+          my $json_text = read_file($location_cache_file);
+          %location_cache = %{ decode_json($json_text) };
+      };
+      print_to_console('ERROR', "Failed to load location cache: $@") if $@;
+  }
+}
+
+# Subroutine:  store_location_cache
+# Information: Subroutine to store locations cache data from %location_cache hash into JSON file.
+# Parameters:  None
+# Return:      None
+sub store_location_cache {
+    my $json = JSON->new->utf8->pretty->encode(\%location_cache); 
+    open my $fh, '>', $location_cache_file  or print_to_console('ERROR', "Cannot write file: $!"); 
+    print $fh $json; 
+    close $fh;
+}
+
+sub convert_cordenates_to_decimal {
     my ($coordinate_string) = @_;
+    my $latitude = undef;
+    my $longitude = undef;
 
     # Extract latitude and longitude components using regex
     if ($coordinate_string =~ /(\d+)\s*deg\s*(\d+)'?\s*(\d+(?:\.\d+)?)"?\s*([NS])\s*,\s*(\d+)\s*deg\s*(\d+)'?\s*(\d+(?:\.\d+)?)"?\s*([EW])/) {
         my ($lat_d, $lat_m, $lat_s, $lat_dir, $lon_d, $lon_m, $lon_s, $lon_dir) = ($1, $2, $3, $4, $5, $6, $7, $8);
 
         # Convert DMS to decimal degrees
-        my $latitude  = $lat_d + ($lat_m / 60) + ($lat_s / 3600);
-        my $longitude = $lon_d + ($lon_m / 60) + ($lon_s / 3600);
+        $latitude  = $lat_d + ($lat_m / 60) + ($lat_s / 3600);
+        $longitude = $lon_d + ($lon_m / 60) + ($lon_s / 3600);
 
         # Adjust for direction (N/S and E/W)
         $latitude  *= -1 if $lat_dir eq 'S';
         $longitude *= -1 if $lon_dir eq 'W';
-
-        # Generate Google Maps link
-        return "https://www.google.com/maps/place/$latitude,$longitude";
-    } else {
-        return "Invalid coordinate format!";
     }
+
+    return ($latitude, $longitude);
 }
+
+# Subroutine:  decode_location
+# Information: Subroutine to get detailed location information (city, state, country) from latitude and longitude using Nominatim API.
+# Parameters:  $_[0]: Latitude
+#              $_[1]: Longitude
+# Return:      Detailed location string
+sub decode_location {
+
+  my ($latitude, $longitude) = @_;
+
+  # Round latitude and longitude to 3 decimal places. This provides an accuracy of about 111 meters at the equator. Reduces API calls while improve speed.
+  $latitude = sprintf("%.3f", $latitude);
+  $longitude = sprintf("%.3f", $longitude);
+  my %location;
+  $location{display_name} = ' ';
+  $location{address}{country} =  ' ';
+
+  # Check if location is already in cache
+  if (exists $location_cache{"$latitude,$longitude"}{display_name} && 
+      exists $location_cache{"$latitude,$longitude"}{address}) {
+      $location{display_name} = $location_cache{"$latitude,$longitude"}{display_name};
+      $location{address} = $location_cache{"$latitude,$longitude"}{address};
+      return %location;
+  }
+  else {
+      # Fetch location data from Nominatim API
+      my $ua = LWP::UserAgent->new; 
+      $ua->agent("PhotoOrganizer/v1.0"); # REQUIRED by Nominatim 
+      my $nominatim_url = "https://nominatim.openstreetmap.org/reverse?lat=$latitude&lon=$longitude&zoom=15&format=jsonv2";
+      my $location_data = $ua->get($nominatim_url);
+
+      if (!$location_data->is_success) {
+          print_to_console('ERROR', "Failed to fetch location data: $@");
+          return %location;
+      } 
+      else {
+
+          # Decode JSON response
+          my $raw = $location_data->content; 
+          $raw =~ s/^\xEF\xBB\xBF//; # Remove BOM if present
+          $raw =~ s/^\s+//; # Remove leading whitespace (spaces, tabs, newlines)
+          my $location_info = eval { decode_json($raw) };
+
+          if ($@) { 
+            print_to_console('ERROR', "Failed to parse JSON: $@\n");
+            return %location;
+          } 
+          else {
+
+            # Store location info in cache
+            $location_cache{"$latitude,$longitude"}{display_name} = $location_info->{display_name};
+            $location_cache{"$latitude,$longitude"}{address} = $location_info->{address};
+            store_location_cache();
+
+            # set return values
+            $location{display_name} = $location_info->{display_name};
+            $location{address} = $location_info->{address};
+         }
+      }
+
+  }
+
+  return %location;
+}
+
 
 # Subroutine:  read_file_metadata
 # Information: Subroutine to find and index all files to import. 
@@ -145,7 +245,7 @@ sub read_file_metadata
     $file_metadata{'ImportPath'}        = $file_path;
     $file_metadata{'FileCRC'}           = calculate_file_crc32($file_path);
     $file_metadata{'FileSize'}          = $exifTool->GetValue('FileSize', 'PrintConv') || ' ';
-    $file_metadata{'FileTypeExtension'} = $exifTool->GetValue('FileTypeExtension', 'PrintConv') || ' ';
+    $file_metadata{'FileType'}          = $exifTool->GetValue('FileTypeExtension', 'PrintConv') || ' ';
     $file_metadata{'Make'}              = $exifTool->GetValue('Make', 'PrintConv') || ' ';
     $file_metadata{'Model'}             = $exifTool->GetValue('Model', 'PrintConv') || ' ';
     $file_metadata{'ImageSize'}         = $exifTool->GetValue('ImageSize', 'PrintConv') || ' ';
@@ -164,16 +264,18 @@ sub read_file_metadata
                                            ($exifTool->GetValue('GPSAltitude', 'PrintConv')   || ' ') . ', ' .
                                            ($exifTool->GetValue('GPSAltitudeRef', 'PrintConv')|| ' ')) unless defined $file_metadata{'GPSInfo'};
     $file_metadata{'GPSInfo'} = ' ' if($file_metadata{'GPSInfo'} eq ' ,  ,  ,  ');
-    $file_metadata{'MapLink'} = generate_google_maps_link($file_metadata{'GPSInfo'}) if ($file_metadata{'GPSInfo'} ne ' ');
-    $file_metadata{'MapLink'} ||= ' ';
-        
+    my ($latitude, $longitude) = convert_cordenates_to_decimal($file_metadata{'GPSInfo'});
+    $file_metadata{'MapLink'} = "https://www.google.com/maps/place/$latitude,$longitude" if ((defined $latitude) && (defined $longitude));
+    my %location_info = decode_location($latitude, $longitude) if(($detailed_location) && (defined $latitude) && (defined $longitude));
+
+    $file_metadata{'Location'} = $location_info{display_name}; # if (exists $location_info{display_name});
+    $file_metadata{'Country'} = $location_info{address}{country};# if (exists $location_info{address}->{country});
+
     # Prefered parameter to extract date depending on file type
-    if('mov' eq $file_metadata{'FileTypeExtension'})
-    {
+    if('mov' eq $file_metadata{'FileType'}){
         $file_metadata{'Date'} = ($exifTool->GetValue('CreationDate', 'PrintConv'));
     }
-    else
-    {
+    else {
        # Default for all other formats
        $file_metadata{'Date'} = ($exifTool->GetValue('CreateDate', 'PrintConv')        || 
                                  $exifTool->GetValue('DateTimeOriginal', 'PrintConv')  ||
@@ -183,9 +285,6 @@ sub read_file_metadata
     }
 
     return %file_metadata;
-
-    # https://nominatim.openstreetmap.org/reverse?lat=20.15855&lon=-103.04309&zoom=8&format=jsonv2
-    # https://operations.osmfoundation.org/policies/nominatim/
 
 }
 
@@ -198,20 +297,34 @@ sub read_file_metadata
 sub add_inventory_entry {
     my %file_entry = @_; 
     my $import_date = DateTime->now->strftime('%Y:%m:%d %H:%M:%S ') . DateTime->now->time_zone->name;
-    my @inventory_header = ('Imported Date',           'Imported from:',     'Destination',         'File CRC32', 
-                             'File Size',              'File Type',          'DateTimeOriginal', 
-                             'Make',                   'Model',              'Image Size', 
-                             'Megapixels',             'Focal Length',       'Exposure Time', 
-                             'Aperture (f)',           'ISO',                'LensInfo', 
-                             'Flash',                  'GPS Info',
-                             'Content Identifier',     'CreateDate',         'DateTimeOriginal', 'FileModifyDate', 'FileCreateDate', 'Map Link');
-    my @inventory_entries = ($import_date,                      $file_entry{'ImportPath'},        $file_entry{'Destination'}, $file_entry{'FileCRC'}, 
-                             $file_entry{'FileSize'},           $file_entry{'FileTypeExtension'}, $file_entry{'Date'}, 
-                             $file_entry{'Make'},               $file_entry{'Model'},             $file_entry{'ImageSize'}, 
-                             $file_entry{'Megapixels'},         $file_entry{'FocalLength'},       $file_entry{'ExposureTime'}, 
-                             $file_entry{'FNumber'},            $file_entry{'ISO'},               $file_entry{'LensInfo'}, 
-                             $file_entry{'Flash'},              $file_entry{'GPSInfo'},
-                             $file_entry{'ContentIdentifier'},  $file_entry{'CreateDate'},       $file_entry{'DateTimeOriginal'}, $file_entry{'FileModifyDate'}, $file_entry{'FileCreateDate'}, $file_entry{'MapLink'});
+    my @inventory_header = (# Import Info
+                             'Imported Date', 'Imported from:', 'Destination',                 
+                            # File Info
+                             'File Size', 'File Type', 'Date', 'Image Size', 'File CRC32', 'Content Identifier',
+                            # Camera Info
+                            'Make', 'Model', 'Megapixels', 
+                            # Shot Info
+                            'Focal Length',  'Exposure Time', 'Aperture (f)', 'ISO', 'LensInfo', 'Flash', 
+                            # Location Info
+                            'GPS Info', 'Location', 'Country', 'Map Link',
+                            # Debug Info
+                            # 'CreateDate', 'DateTimeOriginal', 'FileModifyDate', 'FileCreateDate'
+                            );
+
+
+    my @inventory_entries = (# Import Info
+                             $import_date, $file_entry{'ImportPath'}, $file_entry{'Destination'}, 
+                             # File Info
+                             $file_entry{'FileSize'}, $file_entry{'FileType'}, $file_entry{'Date'}, $file_entry{'ImageSize'}, $file_entry{'FileCRC'}, $file_entry{'ContentIdentifier'},
+                             # Camera Info
+                             $file_entry{'Make'}, $file_entry{'Model'}, $file_entry{'Megapixels'}, 
+                             # Shot Info          
+                             $file_entry{'FocalLength'}, $file_entry{'ExposureTime'}, $file_entry{'FNumber'}, $file_entry{'ISO'}, $file_entry{'LensInfo'}, $file_entry{'Flash'}, 
+                             # Location Info
+                             $file_entry{'GPSInfo'}, $file_entry{'Location'}, $file_entry{'Country'}, $file_entry{'MapLink'},
+                             # Debug Info
+                             # $file_entry{'CreateDate'}, $file_entry{'DateTimeOriginal'}, $file_entry{'FileModifyDate'}, $file_entry{'FileCreateDate'}
+                             );
 
     # Initialize CSV file if not exists
     if (!-e "$photo_library_path/inventory.csv") {

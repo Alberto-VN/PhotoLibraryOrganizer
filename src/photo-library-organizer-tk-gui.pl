@@ -5,7 +5,7 @@ use Tk::ProgressBar;
 use Config::Tiny;     # Install the module with the command: cpan Config::Tiny
 
 # Global file variables
-my $config_file = './Photo-Library-Organizer.ini';
+my $config_file = './data/Photo-Library-Organizer.ini';
 my $gui_default_font = "{Arial} 10";
 
 # Global GUI elements
