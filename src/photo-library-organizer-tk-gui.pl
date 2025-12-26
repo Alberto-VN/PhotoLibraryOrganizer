@@ -5,7 +5,7 @@ use Tk::ProgressBar;
 use Config::Tiny;     # Install the module with the command: cpan Config::Tiny
 
 # Global file variables
-my $config_file = './Photo-Library-Organizer.ini';
+my $config_file = './data/Photo-Library-Organizer.ini';
 my $gui_default_font = "{Arial} 10";
 
 # Global GUI elements
@@ -159,6 +159,17 @@ sub add_log_entry {
     print $fh $_[0] . "\n";
     close $fh;
 }
+
+
+# Subroutine:  update_progress_bar
+# Information: Updates the progress bar with the given fraction and optional text
+# Parameters:  $_[0]: Fraction value (0.0 to 1.0)
+#              $_[1]: Optional text label
+# Return:      None
+sub update_progress_bar {
+  # Routine body is empty, as progress bar is updated directly with progress_value variable
+}
+
 
 # Subroutine:  photo_library_organizer_gui
 # Information: This is the main subroutine for the GUI. It configures every element and its properties on the main window.

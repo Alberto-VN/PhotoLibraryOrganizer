@@ -1,2 +1,2 @@
-*.ini
-locations.json
+data/*
+
