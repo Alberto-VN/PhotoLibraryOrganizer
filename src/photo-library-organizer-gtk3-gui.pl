@@ -6,7 +6,6 @@ use Config::Tiny;     # Install the module with the command: cpan Config::Tiny
 
 
 # Global file variables
-my $config_file = './data/Photo-Library-Organizer.ini';
 my $gui_default_font = "Arial 10";
 
 # Global GUI elements
@@ -132,7 +131,9 @@ sub print_to_console {
 
     $warning_counter++ if $message_level eq 'WARNING';
     $error_counter++ if $message_level eq 'ERROR';
-    
+
+    add_log_entry($message) if ($auto_export_log);
+
     print("$message_level: $message\n");
 }
 

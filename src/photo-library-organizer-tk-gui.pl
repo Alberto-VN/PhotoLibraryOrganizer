@@ -5,7 +5,6 @@ use Tk::ProgressBar;
 use Config::Tiny;     # Install the module with the command: cpan Config::Tiny
 
 # Global file variables
-my $config_file = './data/Photo-Library-Organizer.ini';
 my $gui_default_font = "{Arial} 10";
 
 # Global GUI elements
@@ -13,9 +12,7 @@ my $mw = MainWindow->new;
 my $console;
 
 # Subroutine:  load_config
-# Information: This subroutine loads the configuration variables from an INI file.
-#              This helps the user to have a consistent configuration across multiple runs.
-#              This subroutine is called at the beginning of the GUI program.
+# Information: Loads configuration from INI file
 # Parameters:  None
 # Return:      None
 sub load_config {
@@ -24,17 +21,16 @@ sub load_config {
         $import_dir = $config->{_}->{import_dir} // '';
         $photo_library_path = $config->{_}->{photo_library_path} // '';
         $file_keyword = $config->{_}->{file_keyword} // 'IMG';
-        $verbose = $config->{_}->{verbose} // @verbose_options[0];
+        $verbose = $config->{_}->{verbose} // $verbose_options[0];
         $auto_export_log = $config->{_}->{auto_export_log} // 1;
-        $import_action = $config->{_}->{import_action} // @import_action_options[0];
+        $import_action = $config->{_}->{import_action} // $import_action_options[0];
         $inventory_enabled = $config->{_}->{inventory_enabled} // 1;
         $excluded_extensions = $config->{_}->{excluded_extensions} // $excluded_extensions;
     }
 }
 
 # Subroutine:  save_config
-# Information: This subroutine stores the value of configuration variables into an INI file.
-#              This helps the user to have a consistent configuration across multiple runs.
+# Information: Saves configuration to INI file
 #              This subroutine is called when the user clicks the "Save Config" button.
 # Parameters:  None
 # Return:      None
@@ -52,7 +48,7 @@ sub save_config {
 }
 
 # Subroutine:  print_to_console
-# Information: This subroutine prints messages to the console and the terminal.
+# Information: Prints messages to the console with color coding
 #              It classifies the message level to:
 #                - VERBOSE: Optional message that users can ignore. 
 #                - INFO: General information about the process that gets always printed.
@@ -60,7 +56,7 @@ sub save_config {
 #                - ERROR: Information about a critical condition or exception that interfere with the correct execution of the program. 
 #              This subroutine is called as replacement of print.
 # Parameters:  $_[0]: Message level {VERBOSE, INFO, WARNING, ERROR}
-#              $_[1]: Message. String with the message to log.
+#              $_[1]: Message text to log
 # Return:      None
 sub print_to_console {
     my ($message_level, $message) = @_;
@@ -82,11 +78,11 @@ sub print_to_console {
 
     add_log_entry($message) if ($auto_export_log);
 
-    print("$message\n");
+    print("$message_level: $message\n");
 }
 
 # Subroutine:  clean_console
-# Information: This subroutine clean the console before starting a new import process.
+# Information: Clears the console
 # Parameters:  None
 # Return:      None
 sub clean_console {
@@ -100,8 +96,8 @@ sub clean_console {
 }
 
 # Subroutine:  warning_alert
-# Information: This subroutine shows a Warning alert to the GUI user. Prints a warning to the CLI user. 
-# Parameters:  $_[0]: Message. String with the warning to show.
+# Information: Shows a warning dialog
+# Parameters:  $_[0]: Warning message
 # Return:      None
 sub warning_alert {
 
@@ -113,11 +109,10 @@ sub warning_alert {
 }
 
 # Subroutine:  import_summary
-# Information: This subroutine prints a summary of the import process for the CLI user or shows a message box for the GUI user. 
-#              Summary includes amount of files imported, errors and warnings. It gets called at the end of the import process. 
-# Parameters:  $_[0]: Amount of files imported
-#              $_[1]: Amount of warnings counted.
-#              $_[2]: Amount of errors counted.
+# Information: Shows import summary dialog
+# Parameters:  $_[0]: Number of files imported
+#              $_[1]: Number of warnings
+#              $_[2]: Number of errors
 # Return:      None
 sub import_summary {
     
@@ -130,7 +125,7 @@ sub import_summary {
 }
 
 # Subroutine:  export_log
-# Information: This subroutine exports a log file with information about the process. Level of details depends on the verbosity level configured. 
+# Information: Exports console log to file. See verbosity levels. 
 #              Subroutine gets called at the end of the import process if configuration automatically exports logs ($auto_export_log) or 
 #              when "Export Log" button gets pressed. 
 #              Auto export log is only available on GUI as CLI users always get events logged in console. 
@@ -151,7 +146,7 @@ sub  export_log {
 }
 
 # Subroutine:  add_log_entry
-# Information: Subroutine to add a new event entry to the log file.
+# Information: Add a new event entry to the log file.
 # Parameters:  $_[0]: String with event to be added to the log file.
 # Return:      None
 sub add_log_entry {

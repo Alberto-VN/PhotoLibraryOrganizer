@@ -14,13 +14,6 @@ use DateTime;
 use JSON;
 use LWP::UserAgent;
 
-# Load GUI module conditionally
-if ($^O eq 'linux') {
-    require "./src/photo-library-organizer-gtk3-gui.pl";
-} elsif ($^O eq 'MSWin32') {
-    require "./src/photo-library-organizer-tk-gui.pl";
-}
-
 # Global variables
 my $import_counter = 0;
 my $process_running = 0;
@@ -30,7 +23,7 @@ our $progress_value = 0;
 
 my @months_name = ('January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December');
 our @verbose_options = ("All Events", "Warnings & Errors");
-our @import_action_options = ("Copy files", "Move files"); 
+our @import_action_options = ("Copy files", "Move files", "Dry Run"); 
 our $auto_export_log;
 our $inventory_enabled;
 our $gui_mode = 0;
@@ -42,9 +35,17 @@ our $detailed_location = 1;
 our $excluded_extensions = qr/\.(csv|xlsx|zip|7z)$/i; # Files extensions excluded from import.
 my @files_to_import;
 
+our $config_file = './data/Photo-Library-Organizer.ini';
 my $location_cache_file = "./data/locations-cache.json";
 my %location_cache;
 
+
+# Load GUI module conditionally
+if ($^O eq 'linux') {
+    require "./src/photo-library-organizer-gtk3-gui.pl";
+} elsif ($^O eq 'MSWin32') {
+    require "./src/photo-library-organizer-tk-gui.pl";
+}
 
 # -------------------------------------------------------------------------------
 # Program entry
@@ -56,7 +57,9 @@ load_location_cache();
 # Parse command-line arguments 
 GetOptions( 'k=s' => \$file_keyword, 
             'gui' => \&photo_library_organizer_gui, 
+            'cp' => sub { $import_action = $import_action_options[0]}, 
             'mv' => sub { $import_action = $import_action_options[1]}, 
+            'dry-run' => sub { $import_action = $import_action_options[2]}, 
             'i' => sub { $inventory_enabled = 1;}, 
             'v' => sub { $verbose = 1;}, 
             'l' => sub { $auto_export_log = 1;}, 
@@ -357,7 +360,7 @@ sub index_files_to_import {
     }
     # Skip files with excluded extensions
     if ($file_path =~ $excluded_extensions) {
-        print_to_console('WARNING', "Excluded File: '$file_path' Edit exclusions list on .init file");
+        print_to_console('WARNING', "Excluded File: '$file_path' Edit exclusions list on $config_file file");
         return;
     }
 
@@ -390,22 +393,25 @@ sub process_file {
     my $new_file_path = $new_file_dir . $new_file_name;
     $file_metadata{'Destination'} = $new_file_path;
 
-    # Create the directory if it doesn't exist
-    make_path($new_file_dir) unless -d $new_file_dir;
-
     # Import file
     print_to_console('WARNING', "'$file_path' already in library. File Identifier ('$file_identifier') matched with file '$new_file_path'. File not imported.") && return if -e $new_file_path;
-    if ($import_action eq $import_action_options[1]) {
-        move($file_path, $new_file_path)? $import_counter++ : print_to_console('ERROR', "'$file_path' move failed: $!" && return);
-    } else {
-        copy($file_path, $new_file_path)? $import_counter++ : print_to_console('ERROR', "'$file_path' copy failed: $!" && return);
-    }
-    print_to_console('VERBOSE', "[$progress_value%] Import File:'$file_path' to '$new_file_path'");
     
-    # add to file inventory
-     if ($inventory_enabled) {
+    if ($import_action eq $import_action_options[0]){      # Copy 
+        make_path($new_file_dir) unless -d $new_file_dir;
+        copy($file_path, $new_file_path)? $import_counter++ : print_to_console('ERROR', "'$file_path' copy failed: $!" && return);
+        print_to_console('VERBOSE', "[$progress_value%] Copy File:'$file_path' to '$new_file_path'");
+    } elsif ($import_action eq $import_action_options[1]){ # Move 
+        make_path($new_file_dir) unless -d $new_file_dir;
+        move($file_path, $new_file_path)? $import_counter++ : print_to_console('ERROR', "'$file_path' move failed: $!" && return);
+        print_to_console('VERBOSE', "[$progress_value%] Move File:'$file_path' to '$new_file_path'");
+    } else {
+        print_to_console('VERBOSE', "[$progress_value%] Dry-run:'$file_path' to '$new_file_path'");
+    }
+    
+    # add to file inventory, if inventory enabled and not in dry-run mode
+    if (($inventory_enabled) && ($import_action ne $import_action_options[3])) {
         add_inventory_entry(%file_metadata);
-     }
+    }
 }
 
 # Subroutine:  __DIE__
@@ -447,7 +453,15 @@ sub run_photo_library_organizer {
     # Set log file name
     if ($auto_export_log) {
         my $import_date_subfix = DateTime->now->strftime('%Y-%m-%d_%H-%M-%S_') . DateTime->now->time_zone->name; 
-        $log_file_path = "$photo_library_path/log/import-$import_date_subfix.log";
+
+        # Define log file path - different name for dry-run mode
+        if (($import_action ne $import_action_options[3])) {
+            $log_file_path = "$photo_library_path/log/import-$import_date_subfix.log";
+        }
+        else {
+            $log_file_path = "$photo_library_path/log/dry-run-$import_date_subfix.log";
+        }
+
         make_path("$photo_library_path/log") unless -d "$photo_library_path/log";
     }
 
