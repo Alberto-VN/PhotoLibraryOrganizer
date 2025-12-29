@@ -13,6 +13,7 @@ my $window = Gtk3::Window->new('toplevel');
 my $console_buffer;
 my $console_view;
 my $progress_bar;
+my $gui_mode = 0;
 
 
 # Subroutine:  create_file_chooser_frame
@@ -72,10 +73,16 @@ sub load_config {
         $import_dir = $config->{_}->{import_dir} // '';
         $photo_library_path = $config->{_}->{photo_library_path} // '';
         $file_keyword = $config->{_}->{file_keyword} // 'IMG';
-        $verbose = $config->{_}->{verbose} // $verbose_options[0];
+        $verbose_level = $config->{_}->{verbose_level} // $verbose_level;
         $auto_export_log = $config->{_}->{auto_export_log} // 1;
         $import_action = $config->{_}->{import_action} // $import_action_options[0];
         $inventory_enabled = $config->{_}->{inventory_enabled} // 1;
+        $excluded_extensions = $config->{_}->{excluded_extensions} // $excluded_extensions;
+        print_to_console('DEBUG', "Configuration loaded from $config_file");
+    }
+    else
+    {
+        print_to_console('DEBUG', "Failed to load configuration");
     }
 }
 
@@ -89,19 +96,21 @@ sub save_config {
     $config->{_}->{import_dir} = $import_dir;
     $config->{_}->{photo_library_path} = $photo_library_path;
     $config->{_}->{file_keyword} = $file_keyword;
-    $config->{_}->{verbose} = $verbose;
+    $config->{_}->{verbose_level} = $verbose_level;
     $config->{_}->{auto_export_log} = $auto_export_log;
     $config->{_}->{import_action} = $import_action;
     $config->{_}->{inventory_enabled} = $inventory_enabled;
     $config->{_}->{excluded_extensions} = $excluded_extensions;
     $config->write($config_file);
+    print_to_console('DEBUG', "Configuration saved to $config_file");
 }
 
 # Subroutine:  print_to_console
 # Information: Prints messages to the console with color coding
 #              It classifies the message level to:
-#                - VERBOSE: Optional message that users can ignore. 
 #                - INFO: General information about the process that gets always printed.
+#                - VERBOSE: Additional information about import process. 
+#                - DEBUG: Detailed debug information for troubleshooting.
 #                - WARNING: Information about a non critical exception condition during the execution of the program
 #                - ERROR: Information about a critical condition or exception that interfere with the correct execution of the program. 
 #              This subroutine is called as replacement of print.
@@ -109,32 +118,47 @@ sub save_config {
 #              $_[1]: Message text to log
 # Return:      None
 sub print_to_console {
-    my ($message_level, $message) = @_;
-    $message_level //= 'WARNING';
-    
-    return if ($message_level eq 'VERBOSE' && $verbose eq $verbose_options[1]);
-    
-    if (defined $console_buffer) {
-        my $formatted_message = $message;
-        $formatted_message = "$message_level: $message" if ($message_level eq 'WARNING' || $message_level eq 'ERROR');
-        my $end_iter = $console_buffer->get_end_iter();
-        $console_buffer->insert_with_tags_by_name($end_iter, "$formatted_message\n", $message_level);
 
-        # Scroll to bottom
-        my $mark = $console_buffer->get_insert();
+    my ($message_level, $message) = @_;
+    my $console_print = 1;
+    $message_level //= 'WARNING';
+    $message = "$message_level: $message" if ($message_level ne 'INFO' && $message_level ne 'VERBOSE');
+
+    # Update Error counters
+    $warning_counter++ if $message_level eq 'WARNING';
+    $error_counter++ if $message_level eq 'ERROR';
+
+    # Execute the filter based on the current verbose level
+    # 0  -> Info |                                      -> Log and console
+    # 1  -> Info | Warnings & Errors |                  -> Log and console
+    # 2  -> Info | Warnings & Errors | Verbose          -> Log and console
+    # 3  -> Info | Warnings & Errors | Verbose | Debug  -> Log file only (suppress console output)
+    # 4  -> Info | Warnings & Errors | Verbose | Debug  -> Log and console
+    return if ($message_level eq 'WARNING' || $message_level eq 'ERROR') && ($verbose_level == 0);
+    return if $message_level eq 'VERBOSE' && ($verbose_level <= 1);
+    return if $message_level eq 'DEBUG' && ($verbose_level <= 2);
+
+    # Suppress console output for DEBUG messages at level 3
+    $console_print = 0 if ($message_level eq 'DEBUG' && $verbose_level == 3);
+
+    # Print to console buffer and scroll to the end
+    if (defined $console_buffer && $console_print) {
+        my $end_iter = $console_buffer->get_end_iter();
+        $console_buffer->insert_with_tags_by_name($end_iter, "$message\n", $message_level);
+
         if ($console_view) {
-            $console_view->scroll_mark_onscreen($mark);
-        }
+          $end_iter = $console_buffer->get_end_iter();
+          $console_view->scroll_to_iter($end_iter, 0.0, 0, 0.0, 1.0);
+		}
 
         Gtk3::main_iteration while Gtk3::events_pending;
     }
 
-    $warning_counter++ if $message_level eq 'WARNING';
-    $error_counter++ if $message_level eq 'ERROR';
+    # Add to log file
+    add_log_entry("$message") if ($auto_export_log);
 
-    add_log_entry($message) if ($auto_export_log);
-
-    print("$message_level: $message\n");
+    # Print to standard output if in CLI mode
+    print("$message\n");
 }
 
 # Subroutine:  clean_console
@@ -142,7 +166,10 @@ sub print_to_console {
 # Parameters:  None
 # Return:      None
 sub clean_console {
-    $console_buffer->set_text('') if defined $console_buffer;
+
+    if ( defined $console_buffer ) {
+        $console_buffer->set_text('');
+    }
 }
 
 # Subroutine:  warning_alert
@@ -168,15 +195,18 @@ sub warning_alert {
 
 # Subroutine:  import_summary
 # Information: Shows import summary dialog
-# Parameters:  $_[0]: Number of files imported
-#              $_[1]: Number of warnings
-#              $_[2]: Number of errors
+# Parameters:  None
 # Return:      None
 sub import_summary {
-    my ($files_imported, $warnings, $errors) = @_;
     
     print_to_console('INFO', "\n------------------------------------------------------");
-    print_to_console('INFO', "Import process completed: $files_imported files imported, $warnings Warnings, $errors Errors");
+    print_to_console('INFO', "Import process completed: \n");
+    print_to_console('INFO', "Assets imported: $import_counter / $total_files");
+    print_to_console('INFO', "Duplicates found: $duplicated_counter");
+    print_to_console('INFO', "Not supported/excluded: $not_imported_counter");
+    print_to_console('INFO', "Warnings: $warning_counter");
+    print_to_console('INFO', "Errors: $error_counter");
+    print_to_console('INFO', "------------------------------------------------------\n");
     
     if ($gui_mode) {
         my $dialog = Gtk3::MessageDialog->new(
@@ -184,7 +214,7 @@ sub import_summary {
             'modal',
             'info',
             'ok',
-            "Import Completed: $files_imported files imported, $warnings Warnings, $errors Errors"
+            "Import Completed: $import_counter/$total_files files imported, $duplicated_counter Duplicates found, $warning_counter Warnings, $error_counter Errors"
         );
         $dialog->run();
         $dialog->destroy();
@@ -232,10 +262,15 @@ sub export_log {
 # Parameters:  $_[0]: String with event to be added to the log file.
 # Return:      None
 sub add_log_entry {
-    open my $fh, '>>', $log_file_path or print_to_console('ERROR', "Could not open '$_[0]' $!");
-    print $fh $_[0] . "\n";
-    close $fh;
+
+    if (defined $log_file_path) {
+        open my $fh, '>>', $log_file_path or print_to_console('ERROR', "Could not open '$_[0]' $!");
+        print $fh $_[0] . "\n";
+        close $fh;
+    }
+
 }
+
 
 # Subroutine:  update_progress_bar
 # Information: Updates the progress bar with the given fraction and optional text
@@ -358,16 +393,9 @@ sub photo_library_organizer_gui {
     }
     $verbose_combo->signal_connect('changed' => sub {
         my $index = $verbose_combo->get_active();
-        $verbose = $verbose_options[$index] if $index >= 0;
+        $verbose_level = $index if $index >= 0;
     });
-    my $verbose_index = 0;
-    for (my $i = 0; $i < @verbose_options; $i++) {
-        if ($verbose_options[$i] eq $verbose) {
-            $verbose_index = $i;
-            last;
-        }
-    }
-    $verbose_combo->set_active($verbose_index);
+    $verbose_combo->set_active($verbose_level);
     $left_options->pack_start($verbose_combo, 0, 0, 0);
 
     # Action combo box
@@ -430,9 +458,10 @@ sub photo_library_organizer_gui {
     $console_buffer = Gtk3::TextBuffer->new();
     
     my $info_tag = $console_buffer->create_tag('INFO', foreground => 'black');
-    my $verbose_tag = $console_buffer->create_tag('VERBOSE', foreground => 'gray');
+    my $verbose_tag = $console_buffer->create_tag('VERBOSE', foreground => 'black');
     my $warning_tag = $console_buffer->create_tag('WARNING', foreground => 'orange');
     my $error_tag = $console_buffer->create_tag('ERROR', foreground => 'red');
+    my $debug_tag = $console_buffer->create_tag('DEBUG', foreground => 'gray');
 
     $console_view = Gtk3::TextView->new_with_buffer($console_buffer);
     $console_view->set_editable(0);
@@ -447,7 +476,7 @@ sub photo_library_organizer_gui {
 
     # Progress bar
     $progress_bar = Gtk3::ProgressBar->new();
-    $progress_bar->set_show_text(0);
+    $progress_bar->set_show_text(1);
     $console_vbox->pack_start($progress_bar, 0, 1, 0);
 
     # Show all widgets
