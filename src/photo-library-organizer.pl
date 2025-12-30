@@ -9,6 +9,7 @@ use File::stat;
 use Image::ExifTool qw(:Public);
 use Digest::CRC qw(crc32);
 use File::Slurp qw(read_file);
+use POSIX qw(strftime);
 use Getopt::Long;
 use DateTime;
 use JSON;
@@ -377,7 +378,7 @@ sub read_file_metadata
 # Return:      None
 sub add_inventory_entry {
     my %file_entry = @_; 
-    my $import_date = DateTime->now->strftime('%Y:%m:%d %H:%M:%S ') . DateTime->now->time_zone->name;
+    my $import_date = strftime '%Y:%m:%d %H:%M:%S' , localtime;
     my @inventory_header = (# Import Info
                              'Imported Date', 'Imported from:', 'Destination',                 
                             # File Info
@@ -410,14 +411,14 @@ sub add_inventory_entry {
     # Initialize CSV file if not exists
     if (!-e "$photo_library_path/inventory.csv") {
         print_to_console('DEBUG', "Creating inventory file at $photo_library_path/inventory.csv");
-        open my $fh, '>', File::Spec->catfile($photo_library_path, 'inventory.csv') or print_to_console('ERROR', "Could not open '$_[0]' $!");
+        open my $fh, '>:encoding(utf8)', File::Spec->catfile($photo_library_path, 'inventory.csv') or print_to_console('ERROR', "Could not open '$_[0]' $!");
         print $fh "sep=;\n";
         print $fh join("; ", @inventory_header) . "\n";
         close $fh;
     }
 
     # Add entry to CSV file
-    open my $fh, '>>', "$photo_library_path/inventory.csv" or print_to_console('ERROR', "Could not open '$_[0]' $!");
+    open my $fh, '>>:encoding(utf8)', "$photo_library_path/inventory.csv" or print_to_console('ERROR', "Could not open '$_[0]' $!");
     print $fh join("; ", @inventory_entries) . "\n";
     close $fh;
 }
@@ -587,7 +588,7 @@ sub run_photo_library_organizer {
     
     # Set log file name
     if ($auto_export_log) {
-        my $import_date_subfix = DateTime->now->strftime('%Y-%m-%d_%H-%M-%S_') . DateTime->now->time_zone->name; 
+        my $import_date_subfix = strftime '%Y-%m-%d_%H-%M-%S' , localtime;
 
         # Define log file path - different name for dry-run mode
         if (($import_action ne 'Dry Run')) {
